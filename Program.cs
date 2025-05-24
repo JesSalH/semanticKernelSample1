@@ -1,59 +1,48 @@
 ﻿using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
-using Microsoft.SemanticKernel.Connectors.OpenAI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using semanticKernelSample1.Assistant;
+using semanticKernelSample1.Plugins;
+using semanticKernelSample1.Extensions;
 
-// Build configuration
-var configuration = new ConfigurationBuilder()
-    .SetBasePath(Directory.GetCurrentDirectory())
-    .AddJsonFile("MyAppSettings.json", optional: false, reloadOnChange: true)
-    .Build();
-
-// Set up dependency injection
-var services = new ServiceCollection();
-services.AddSingleton<IConfiguration>(configuration);
-services.AddHttpClient<ApiAlphaPlugin>();
-services.AddTransient<ApiAlphaPlugin>();
-
+// Register configuration and services
+var services = new ServiceCollection().AddAppServices();
 var serviceProvider = services.BuildServiceProvider();
 
-var modelId = "gpt-4";
+var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+var modelId = configuration["ModelId"] ?? throw new InvalidOperationException("ModelId not found in configuration");
 var apiKey = configuration["OpenAIKey"] ?? throw new InvalidOperationException("OpenAIKey not found in configuration");
 
+// Create kernel with OpenAI chat completion
 var builder = Kernel.CreateBuilder().AddOpenAIChatCompletion(modelId, apiKey);
-
 var kernel = builder.Build();
 var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
 
-// Get the ApiAlphaPlugin from DI container
-var apiAlphaPlugin = serviceProvider.GetRequiredService<ApiAlphaPlugin>();
+// Register the ApiAlphaPlugin with the kernel using our service provider
+kernel.Plugins.AddFromType<ApiAlphaPlugin>("ApiAlpha", serviceProvider);
 
-OpenAIPromptExecutionSettings settings = new()
+// Get logger and create assistant
+var logger = serviceProvider.GetRequiredService<ILogger<GptAssistant>>();
+
+// Log available plugins and functions for debugging
+var appLogger = serviceProvider.GetRequiredService<ILogger<Program>>();
+appLogger.LogInformation("Available plugins: {PluginCount}", kernel.Plugins.Count);
+foreach (var plugin in kernel.Plugins)
 {
-    FunctionChoiceBehavior = FunctionChoiceBehavior.Auto(),
-};
-var history = new ChatHistory();
+    appLogger.LogInformation("Plugin: {PluginName}", plugin.Name);
+    foreach (var function in plugin.GetFunctionsMetadata())
+    {
+        appLogger.LogInformation("  Function: {FunctionName} - {Description}", function.Name, function.Description);
+    }
+}
 
-string? userInput;
+var assistant = new GptAssistant(kernel, chatCompletionService, logger);
 
-do
-{
-    Console.Write("User: ");
-    userInput = Console.ReadLine();
-    if (string.IsNullOrWhiteSpace(userInput)) continue;
+Console.WriteLine("GPT Assistant with API Alpha Plugin is ready!");
+Console.WriteLine("You can ask me about base character names from the API.");
+Console.WriteLine("Type 'exit' or leave empty to quit.\n");
 
-
-    history.AddUserMessage(userInput);
-
-    // this is what gets the resopnse from the assistant
-    
-    var response = await chatCompletionService.GetChatMessageContentAsync(
-        history,
-        executionSettings: settings,
-        kernel: kernel
-        );
-    history.AddAssistantMessage(response.Content);
-
-    Console.WriteLine($"Assistant: {response.Content}");
-} while (!string.IsNullOrWhiteSpace(userInput));
+// Run the GPT assistant
+await assistant.RunAsync();
